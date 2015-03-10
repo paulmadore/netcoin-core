@@ -261,10 +261,11 @@ WalletModel::SendCoinsReturn WalletModel::prepareTransaction(WalletModelTransact
         transaction.newPossibleKeyChange(wallet);
         CAmount nFeeRequired = 0;
         std::string strFailReason;
+        std::string strTxComment;
 
         CWalletTx *newTx = transaction.getTransaction();
         CReserveKey *keyChange = transaction.getPossibleKeyChange();
-        bool fCreated = wallet->CreateTransaction(vecSend, *newTx, *keyChange, nFeeRequired, strFailReason, coinControl);
+        bool fCreated = wallet->CreateTransaction(vecSend, *newTx, *keyChange, nFeeRequired, strFailReason, strTxComment, coinControl);
         transaction.setTransactionFee(nFeeRequired);
 
         if(!fCreated)

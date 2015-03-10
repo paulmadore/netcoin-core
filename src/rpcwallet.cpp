@@ -63,6 +63,7 @@ void WalletTxToJSON(const CWalletTx& wtx, Object& entry)
     entry.push_back(Pair("walletconflicts", conflicts));
     entry.push_back(Pair("time", wtx.GetTxTime()));
     entry.push_back(Pair("timereceived", (int64_t)wtx.nTimeReceived));
+    entry.push_back(Pair("tx-comment", wtx.strTxComment));
     BOOST_FOREACH(const PAIRTYPE(string,string)& item, wtx.mapValue)
         entry.push_back(Pair(item.first, item.second));
 }
@@ -320,6 +321,7 @@ void SendMoney(const CTxDestination &address, CAmount nValue, CWalletTx& wtxNew)
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
 
     string strError;
+    std::string strTxComment;
     if (pwalletMain->IsLocked())
     {
         strError = "Error: Wallet locked, unable to create transaction!";
@@ -333,7 +335,7 @@ void SendMoney(const CTxDestination &address, CAmount nValue, CWalletTx& wtxNew)
     // Create and send the transaction
     CReserveKey reservekey(pwalletMain);
     CAmount nFeeRequired;
-    if (!pwalletMain->CreateTransaction(scriptPubKey, nValue, wtxNew, reservekey, nFeeRequired, strError))
+    if (!pwalletMain->CreateTransaction(scriptPubKey, nValue, wtxNew, reservekey, nFeeRequired, strError, strTxComment))
     {
         if (nValue + nFeeRequired > pwalletMain->GetBalance())
             strError = strprintf("Error: This transaction requires a transaction fee of at least %s because of its amount, complexity, or use of recently received funds!", FormatMoney(nFeeRequired));
@@ -865,9 +867,12 @@ Value sendmany(const Array& params, bool fHelp)
         nMinDepth = params[2].get_int();
 
     CWalletTx wtx;
+    std::string strTxComment;
     wtx.strFromAccount = strAccount;
     if (params.size() > 3 && params[3].type() != null_type && !params[3].get_str().empty())
         wtx.mapValue["comment"] = params[3].get_str();
+    if (params.size() > 4 && params[4].type() != null_type && !params[4].get_str().empty())
+        strTxComment = params[4].get_str();
 
     set<CBitcoinAddress> setAddress;
     vector<pair<CScript, CAmount> > vecSend;
@@ -901,7 +906,7 @@ Value sendmany(const Array& params, bool fHelp)
     CReserveKey keyChange(pwalletMain);
     CAmount nFeeRequired = 0;
     string strFailReason;
-    bool fCreated = pwalletMain->CreateTransaction(vecSend, wtx, keyChange, nFeeRequired, strFailReason);
+    bool fCreated = pwalletMain->CreateTransaction(vecSend, wtx, keyChange, nFeeRequired, strFailReason, strTxComment);
     if (!fCreated)
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, strFailReason);
     if (!pwalletMain->CommitTransaction(wtx, keyChange))

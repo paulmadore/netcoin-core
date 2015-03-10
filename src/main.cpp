@@ -55,7 +55,7 @@ unsigned int nCoinCacheSize = 5000;
 
 
 /** Fees smaller than this (in satoshi) are considered zero fee (for relaying and mining) */
-CFeeRate minRelayTxFee = CFeeRate(DUST_THRESHOLD);
+CFeeRate minRelayTxFee = CFeeRate(1000);
 
 CTxMemPool mempool(::minRelayTxFee);
 
@@ -903,15 +903,6 @@ CAmount GetMinRelayFee(const CTransaction& tx, unsigned int nBytes, bool fAllowF
         if (dPriorityDelta > 0 || nFeeDelta > 0)
             return 0;
     }
-
-    // Netcoin
-    // To limit dust spam, add 1000 byte penalty for each output smaller than DUST_THRESHOLD
-    BOOST_FOREACH(const CTxOut& txout, tx.vout)
-        if (txout.nValue < DUST_THRESHOLD)
-        {
-            nBytes += 1000;
-            fAllowFree = false;
-        }
 
     CAmount nMinFee = ::minRelayTxFee.GetFee(nBytes);
 
@@ -2531,37 +2522,6 @@ bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& sta
     if (pcheckpoint && nHeight < pcheckpoint->nHeight)
         return state.DoS(100, error("%s : forked chain older than last checkpoint (height %d)", __func__, nHeight));
 
-    // Netcoin: Reject block.nVersion=1 blocks (mainnet >= 710000, testnet >= 400000, regtest uses supermajority)
-    bool enforceV2 = false;
-    if (block.nVersion < 2)
-    {
-        if (Params().EnforceV2AfterHeight() != -1)
-        {
-            // Mainnet 710k, Testnet 400k
-            if (nHeight >= Params().EnforceV2AfterHeight())
-                enforceV2 = true;
-        }
-        else
-        {
-            // Regtest and Unittest: use Bitcoin's supermajority rule
-            if (CBlockIndex::IsSuperMajority(2, pindexPrev, Params().RejectBlockOutdatedMajority()))
-                enforceV2 = true;
-        }
-    }
-
-    if (enforceV2)
-    {
-        return state.Invalid(error("%s : rejected nVersion=1 block", __func__),
-                             REJECT_OBSOLETE, "bad-version");
-    }
-
-    // Reject block.nVersion=2 blocks when 95% (75% on testnet) of the network has upgraded:
-    if (block.nVersion < 3 && CBlockIndex::IsSuperMajority(3, pindexPrev, Params().RejectBlockOutdatedMajority()))
-    {
-        return state.Invalid(error("%s : rejected nVersion=2 block", __func__),
-                             REJECT_OBSOLETE, "bad-version");
-    }
-
     return true;
 }
 
@@ -2575,25 +2535,9 @@ bool ContextualCheckBlock(const CBlock& block, CValidationState& state, CBlockIn
             return state.DoS(10, error("%s : contains a non-final transaction", __func__), REJECT_INVALID, "bad-txns-nonfinal");
         }
 
-    // Netcoin: (mainnet >= 710000, testnet >= 400000, regtest uses supermajority)
     // Enforce block.nVersion=2 rule that the coinbase starts with serialized block height
     // if 750 of the last 1,000 blocks are version 2 or greater (51/100 if testnet):
     bool checkHeightMismatch = false;
-    if (block.nVersion >= 2)
-    {
-        if (Params().EnforceV2AfterHeight() != -1)
-        {
-            // Mainnet 710k, Testnet 400k
-            if (nHeight >= Params().EnforceV2AfterHeight())
-                checkHeightMismatch = true;
-        }
-        else
-        {
-            // Regtest and Unittest: use Bitcoin's supermajority rule
-            if (CBlockIndex::IsSuperMajority(2, pindexPrev, Params().EnforceBlockUpgradeMajority()))
-                checkHeightMismatch = true;
-        }
-    }
 
     if (checkHeightMismatch)
     {
