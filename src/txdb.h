@@ -1,60 +1,65 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2012 The Bitcoin developers
-// Distributed under the MIT/X11 software license, see the accompanying
-// file license.txt or http://www.opensource.org/licenses/mit-license.php.
+// Copyright (c) 2009-2014 The Bitcoin developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_TXDB_H
 #define BITCOIN_TXDB_H
 
-#define DATABASE_VERSION 2
-#endif  // BITCOIN_TXDB_H
-#include "db.h"
-#include <stdint.h>
-/** Access to the transaction database (blkindex.dat) */
+#include "leveldbwrapper.h"
+#include "main.h"
 
-class CTxDB : public CDB
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+class CCoins;
+class uint256;
+
+//! -dbcache default (MiB)
+static const int64_t nDefaultDbCache = 100;
+//! max. -dbcache in (MiB)
+static const int64_t nMaxDbCache = sizeof(void*) > 4 ? 4096 : 1024;
+//! min. -dbcache in (MiB)
+static const int64_t nMinDbCache = 4;
+
+/** CCoinsView backed by the LevelDB coin database (chainstate/) */
+class CCoinsViewDB : public CCoinsView
+{
+protected:
+    CLevelDBWrapper db;
+public:
+    CCoinsViewDB(size_t nCacheSize, bool fMemory = false, bool fWipe = false);
+
+    bool GetCoins(const uint256 &txid, CCoins &coins) const;
+    bool HaveCoins(const uint256 &txid) const;
+    uint256 GetBestBlock() const;
+    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock);
+    bool GetStats(CCoinsStats &stats) const;
+};
+
+/** Access to the block database (blocks/index/) */
+class CBlockTreeDB : public CLevelDBWrapper
 {
 public:
-    CTxDB(const char* pszMode="r+") : CDB("blkindex.dat", pszMode) { }
+    CBlockTreeDB(size_t nCacheSize, bool fMemory = false, bool fWipe = false);
 private:
-    CTxDB(const CTxDB&);
-    void operator=(const CTxDB&);
+    CBlockTreeDB(const CBlockTreeDB&);
+    void operator=(const CBlockTreeDB&);
 public:
-    bool ReadTxIndex(uint256 hash, CTxIndex& txindex);
-    bool UpdateTxIndex(uint256 hash, const CTxIndex& txindex);
-    bool AddTxIndex(const CTransaction& tx, const CDiskTxPos& pos, int nHeight);
-    bool EraseTxIndex(const CTransaction& tx);
-    bool ContainsTx(uint256 hash);
-    bool ReadDiskTx(uint256 hash, CTransaction& tx, CTxIndex& txindex);
-    bool ReadDiskTx(uint256 hash, CTransaction& tx);
-    bool ReadDiskTx(COutPoint outpoint, CTransaction& tx, CTxIndex& txindex);
-    bool ReadDiskTx(COutPoint outpoint, CTransaction& tx);
     bool WriteBlockIndex(const CDiskBlockIndex& blockindex);
-    bool ReadHashBestChain(uint256& hashBestChain);
-    bool WriteHashBestChain(uint256 hashBestChain);
-    bool ReadBestInvalidTrust(CBigNum& bnBestInvalidTrust);
-    bool WriteBestInvalidTrust(CBigNum bnBestInvalidTrust);
-
-    bool ReadBestInvalidTrust(uint256& nBestInvalidTrust)
-    {
-        CBigNum bn;
-        if (ReadBestInvalidTrust(bn)) {
-            nBestInvalidTrust=bn.getuint256();
-            return true;
-        }
-        else
-            return false;
-    }
-
-
-    bool WriteBestInvalidTrust(uint256 nBestInvalidTrust){return WriteBestInvalidTrust(CBigNum(nBestInvalidTrust));}
-
-    bool ReadSyncCheckpoint(uint256& hashCheckpoint);
-    bool WriteSyncCheckpoint(uint256 hashCheckpoint);
-    bool ReadCheckpointPubKey(std::string& strPubKey);
-    bool WriteCheckpointPubKey(const std::string& strPubKey);
-
-    bool LoadBlockIndex();
-private:
+    bool ReadBlockFileInfo(int nFile, CBlockFileInfo &fileinfo);
+    bool WriteBlockFileInfo(int nFile, const CBlockFileInfo &fileinfo);
+    bool ReadLastBlockFile(int &nFile);
+    bool WriteLastBlockFile(int nFile);
+    bool WriteReindexing(bool fReindex);
+    bool ReadReindexing(bool &fReindex);
+    bool ReadTxIndex(const uint256 &txid, CDiskTxPos &pos);
+    bool WriteTxIndex(const std::vector<std::pair<uint256, CDiskTxPos> > &list);
+    bool WriteFlag(const std::string &name, bool fValue);
+    bool ReadFlag(const std::string &name, bool &fValue);
     bool LoadBlockIndexGuts();
 };
+
+#endif // BITCOIN_TXDB_H
