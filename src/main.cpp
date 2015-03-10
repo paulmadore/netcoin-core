@@ -55,7 +55,7 @@ unsigned int nCoinCacheSize = 5000;
 
 
 /** Fees smaller than this (in satoshi) are considered zero fee (for relaying and mining) */
-CFeeRate minRelayTxFee = CFeeRate(1000);
+CFeeRate minRelayTxFee = CFeeRate(DUST_THRESHOLD);
 
 CTxMemPool mempool(::minRelayTxFee);
 
@@ -662,6 +662,10 @@ bool IsStandardTx(const CTransaction& tx, string& reason)
         return false;
     }
 
+    // Disallow large transaction comments
+//    if (strTxComment.length() > MAX_TX_COMMENT_LEN)
+//        return false;
+
     BOOST_FOREACH(const CTxIn& txin, tx.vin)
     {
         // Biggest 'standard' txin is a 15-of-15 P2SH multisig with compressed
@@ -900,6 +904,15 @@ CAmount GetMinRelayFee(const CTransaction& tx, unsigned int nBytes, bool fAllowF
             return 0;
     }
 
+    // Netcoin
+    // To limit dust spam, add 1000 byte penalty for each output smaller than DUST_THRESHOLD
+    BOOST_FOREACH(const CTxOut& txout, tx.vout)
+        if (txout.nValue < DUST_THRESHOLD)
+        {
+            nBytes += 1000;
+            fAllowFree = false;
+        }
+
     CAmount nMinFee = ::minRelayTxFee.GetFee(nBytes);
 
     if (fAllowFree)
@@ -908,7 +921,7 @@ CAmount GetMinRelayFee(const CTransaction& tx, unsigned int nBytes, bool fAllowF
         // * If we are relaying we allow transactions up to DEFAULT_BLOCK_PRIORITY_SIZE - 1000
         //   to be considered to fall into this category. We don't want to encourage sending
         //   multiple transactions instead of one big transaction to avoid fees.
-        if (nBytes < (DEFAULT_BLOCK_PRIORITY_SIZE - 1000))
+        if (nBytes < (DEFAULT_BLOCK_PRIORITY_SIZE - 5000))
             nMinFee = 0;
     }
 
@@ -1205,7 +1218,7 @@ bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos)
     }
 
     // Check the header
-    if (!CheckProofOfWork(block.GetHash(), block.nBits))
+    if (!CheckProofOfWork(block.GetPoWHash(), block.nBits))
         return error("ReadBlockFromDisk : Errors in block header");
 
     return true;
@@ -1625,7 +1638,7 @@ bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, unsigne
 static CCheckQueue<CScriptCheck> scriptcheckqueue(128);
 
 void ThreadScriptCheck() {
-    RenameThread("bitcoin-scriptch");
+    RenameThread("netcoin-scriptch");
     scriptcheckqueue.Thread();
 }
 
@@ -1663,13 +1676,10 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     // See BIP30 and http://r6.ca/blog/20120206T005236Z.html for more information.
     // This logic is not necessary for memory pool transactions, as AcceptToMemoryPool
     // already refuses previously-known transaction ids entirely.
-    // This rule was originally applied all blocks whose timestamp was after March 15, 2012, 0:00 UTC.
-    // Now that the whole chain is irreversibly beyond that time it is applied to all blocks except the
-    // two in the chain that violate it. This prevents exploiting the issue against nodes in their
-    // initial block download.
-    bool fEnforceBIP30 = (!pindex->phashBlock) || // Enforce on CreateNewBlock invocations which don't have a hash.
-                          !((pindex->nHeight==91842 && pindex->GetBlockHash() == uint256("0x00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec")) ||
-                           (pindex->nHeight==91880 && pindex->GetBlockHash() == uint256("0x00000000000743f190a18c5577a3c2d2a1f610ae9601ac046a38084ccb7cd721")));
+    // This rule was originally applied all blocks whose timestamp was after October 1, 2012, 0:00 UTC.
+    // Now that the whole chain is irreversibly beyond that time it is applied to all blocks,
+    // this prevents exploiting the issue against nodes in their initial block download.
+    bool fEnforceBIP30 = true;
     if (fEnforceBIP30) {
         BOOST_FOREACH(const CTransaction& tx, block.vtx) {
             const CCoins* coins = view.AccessCoins(tx.GetHash());
@@ -1679,8 +1689,8 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
         }
     }
 
-    // BIP16 didn't become active until Apr 1 2012
-    int64_t nBIP16SwitchTime = 1333238400;
+    // BIP16 didn't become active until Oct 1 2012
+    int64_t nBIP16SwitchTime = 1349049600;
     bool fStrictPayToScriptHash = (pindex->GetBlockTime() >= nBIP16SwitchTime);
 
     unsigned int flags = fStrictPayToScriptHash ? SCRIPT_VERIFY_P2SH : SCRIPT_VERIFY_NONE;
@@ -2418,7 +2428,7 @@ bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, unsigne
 bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, bool fCheckPOW)
 {
     // Check proof of work matches claimed amount
-    if (fCheckPOW && !CheckProofOfWork(block.GetHash(), block.nBits))
+    if (fCheckPOW && !CheckProofOfWork(block.GetPoWHash(), block.nBits))
         return state.DoS(50, error("CheckBlockHeader() : proof of work failed"),
                          REJECT_INVALID, "high-hash");
 
@@ -2521,9 +2531,25 @@ bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& sta
     if (pcheckpoint && nHeight < pcheckpoint->nHeight)
         return state.DoS(100, error("%s : forked chain older than last checkpoint (height %d)", __func__, nHeight));
 
-    // Reject block.nVersion=1 blocks when 95% (75% on testnet) of the network has upgraded:
-    if (block.nVersion < 2 && 
-        CBlockIndex::IsSuperMajority(2, pindexPrev, Params().RejectBlockOutdatedMajority()))
+    // Netcoin: Reject block.nVersion=1 blocks (mainnet >= 710000, testnet >= 400000, regtest uses supermajority)
+    bool enforceV2 = false;
+    if (block.nVersion < 2)
+    {
+        if (Params().EnforceV2AfterHeight() != -1)
+        {
+            // Mainnet 710k, Testnet 400k
+            if (nHeight >= Params().EnforceV2AfterHeight())
+                enforceV2 = true;
+        }
+        else
+        {
+            // Regtest and Unittest: use Bitcoin's supermajority rule
+            if (CBlockIndex::IsSuperMajority(2, pindexPrev, Params().RejectBlockOutdatedMajority()))
+                enforceV2 = true;
+        }
+    }
+
+    if (enforceV2)
     {
         return state.Invalid(error("%s : rejected nVersion=1 block", __func__),
                              REJECT_OBSOLETE, "bad-version");
@@ -2549,10 +2575,27 @@ bool ContextualCheckBlock(const CBlock& block, CValidationState& state, CBlockIn
             return state.DoS(10, error("%s : contains a non-final transaction", __func__), REJECT_INVALID, "bad-txns-nonfinal");
         }
 
+    // Netcoin: (mainnet >= 710000, testnet >= 400000, regtest uses supermajority)
     // Enforce block.nVersion=2 rule that the coinbase starts with serialized block height
     // if 750 of the last 1,000 blocks are version 2 or greater (51/100 if testnet):
-    if (block.nVersion >= 2 && 
-        CBlockIndex::IsSuperMajority(2, pindexPrev, Params().EnforceBlockUpgradeMajority()))
+    bool checkHeightMismatch = false;
+    if (block.nVersion >= 2)
+    {
+        if (Params().EnforceV2AfterHeight() != -1)
+        {
+            // Mainnet 710k, Testnet 400k
+            if (nHeight >= Params().EnforceV2AfterHeight())
+                checkHeightMismatch = true;
+        }
+        else
+        {
+            // Regtest and Unittest: use Bitcoin's supermajority rule
+            if (CBlockIndex::IsSuperMajority(2, pindexPrev, Params().EnforceBlockUpgradeMajority()))
+                checkHeightMismatch = true;
+        }
+    }
+
+    if (checkHeightMismatch)
     {
         CScript expect = CScript() << nHeight;
         if (block.vtx[0].vin[0].scriptSig.size() < expect.size() ||
@@ -3257,6 +3300,12 @@ string GetWarnings(string strFor)
 }
 
 
+void static RelayAlerts(CNode* pfrom)
+{
+    LOCK(cs_mapAlerts);
+    BOOST_FOREACH(PAIRTYPE(const uint256, CAlert)& item, mapAlerts)
+        item.second.RelayTo(pfrom);
+}
 
 
 
@@ -3312,17 +3361,19 @@ void static ProcessGetData(CNode* pfrom)
                 BlockMap::iterator mi = mapBlockIndex.find(inv.hash);
                 if (mi != mapBlockIndex.end())
                 {
-                    if (chainActive.Contains(mi->second)) {
-                        send = true;
-                    } else {
-                        // To prevent fingerprinting attacks, only send blocks outside of the active
-                        // chain if they are valid, and no more than a month older than the best header
-                        // chain we know about.
-                        send = mi->second->IsValid(BLOCK_VALID_SCRIPTS) && (pindexBestHeader != NULL) &&
-                            (mi->second->GetBlockTime() > pindexBestHeader->GetBlockTime() - 30 * 24 * 60 * 60);
-                        if (!send) {
-                            LogPrintf("ProcessGetData(): ignoring request from peer=%i for old block that isn't in the main chain\n", pfrom->GetId());
+                    // If the requested block is at a height below our last
+                    // checkpoint, only serve it if it's in the checkpointed chain
+                    int nHeight = mi->second->nHeight;
+                    CBlockIndex* pcheckpoint = Checkpoints::GetLastCheckpoint();
+                    if (pcheckpoint && nHeight < pcheckpoint->nHeight) {
+                        if (!chainActive.Contains(mi->second))
+                        {
+                            LogPrintf("ProcessGetData(): ignoring request for old block that isn't in the main chain\n");
+                        } else {
+                            send = true;
                         }
+                    } else {
+                        send = true;
                     }
                 }
                 if (send)
@@ -3420,7 +3471,7 @@ void static ProcessGetData(CNode* pfrom)
 bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, int64_t nTimeReceived)
 {
     RandAddSeedPerfmon();
-    LogPrint("net", "received: %s (%u bytes) peer=%d\n", SanitizeString(strCommand), vRecv.size(), pfrom->id);
+    LogPrint("net", "received: %s (%u bytes) peer=%d\n", strCommand, vRecv.size(), pfrom->id);
     if (mapArgs.count("-dropmessagestest") && GetRand(atoi(mapArgs["-dropmessagestest"])) == 0)
     {
         LogPrintf("dropmessagestest DROPPING RECV MESSAGE\n");
@@ -3447,12 +3498,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         vRecv >> pfrom->nVersion >> pfrom->nServices >> nTime >> addrMe;
         if (pfrom->nVersion < MIN_PEER_PROTO_VERSION)
         {
+            // relay alerts prior to disconnection
+            RelayAlerts(pfrom);
             // disconnect from peers older than this proto version
             LogPrintf("peer=%d using obsolete version %i; disconnecting\n", pfrom->id, pfrom->nVersion);
             pfrom->PushMessage("reject", strCommand, REJECT_OBSOLETE,
                                strprintf("Version must be %d or greater", MIN_PEER_PROTO_VERSION));
             pfrom->fDisconnect = true;
-            return false;
+            return true;
         }
 
         if (pfrom->nVersion == 10300)
@@ -3463,6 +3516,20 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             vRecv >> LIMITED_STRING(pfrom->strSubVer, 256);
             pfrom->cleanSubVer = SanitizeString(pfrom->strSubVer);
         }
+
+        // Disconnect certain incompatible clients
+        const char *badSubVers[] = { "/potcoinseeder", "/reddcoinseeder", "/worldcoinseeder" };
+        for (int x = 0; x < 3; x++)
+        {
+            if (pfrom->cleanSubVer.find(badSubVers[x], 0) == 0)
+            {
+                LogPrintf("invalid subver %s at %s, disconnecting\n", pfrom->cleanSubVer, pfrom->addr.ToString());
+                pfrom->PushMessage("reject", strCommand, REJECT_INVALID, string("invalid client subver"));
+                pfrom->fDisconnect = true;
+                return true;
+            }
+        }
+
         if (!vRecv.empty())
             vRecv >> pfrom->nStartingHeight;
         if (!vRecv.empty())
@@ -3528,11 +3595,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         }
 
         // Relay alerts
-        {
-            LOCK(cs_mapAlerts);
-            BOOST_FOREACH(PAIRTYPE(const uint256, CAlert)& item, mapAlerts)
-                item.second.RelayTo(pfrom);
-        }
+        RelayAlerts(pfrom);
 
         pfrom->fSuccessfullyConnected = true;
 
@@ -4253,7 +4316,7 @@ bool ProcessMessages(CNode* pfrom)
 
         // Scan for message start
         if (memcmp(msg.hdr.pchMessageStart, Params().MessageStart(), MESSAGE_START_SIZE) != 0) {
-            LogPrintf("PROCESSMESSAGE: INVALID MESSAGESTART %s peer=%d\n", SanitizeString(msg.hdr.GetCommand()), pfrom->id);
+            LogPrintf("PROCESSMESSAGE: INVALID MESSAGESTART %s peer=%d\n", msg.hdr.GetCommand(), pfrom->id);
             fOk = false;
             break;
         }
@@ -4262,7 +4325,7 @@ bool ProcessMessages(CNode* pfrom)
         CMessageHeader& hdr = msg.hdr;
         if (!hdr.IsValid())
         {
-            LogPrintf("PROCESSMESSAGE: ERRORS IN HEADER %s peer=%d\n", SanitizeString(hdr.GetCommand()), pfrom->id);
+            LogPrintf("PROCESSMESSAGE: ERRORS IN HEADER %s peer=%d\n", hdr.GetCommand(), pfrom->id);
             continue;
         }
         string strCommand = hdr.GetCommand();
@@ -4277,8 +4340,8 @@ bool ProcessMessages(CNode* pfrom)
         memcpy(&nChecksum, &hash, sizeof(nChecksum));
         if (nChecksum != hdr.nChecksum)
         {
-            LogPrintf("ProcessMessages(%s, %u bytes): CHECKSUM ERROR nChecksum=%08x hdr.nChecksum=%08x\n",
-               SanitizeString(strCommand), nMessageSize, nChecksum, hdr.nChecksum);
+            LogPrintf("ProcessMessages(%s, %u bytes) : CHECKSUM ERROR nChecksum=%08x hdr.nChecksum=%08x\n",
+               strCommand, nMessageSize, nChecksum, hdr.nChecksum);
             continue;
         }
 
@@ -4295,12 +4358,12 @@ bool ProcessMessages(CNode* pfrom)
             if (strstr(e.what(), "end of data"))
             {
                 // Allow exceptions from under-length message on vRecv
-                LogPrintf("ProcessMessages(%s, %u bytes): Exception '%s' caught, normally caused by a message being shorter than its stated length\n", SanitizeString(strCommand), nMessageSize, e.what());
+                LogPrintf("ProcessMessages(%s, %u bytes) : Exception '%s' caught, normally caused by a message being shorter than its stated length\n", strCommand, nMessageSize, e.what());
             }
             else if (strstr(e.what(), "size too large"))
             {
                 // Allow exceptions from over-long size
-                LogPrintf("ProcessMessages(%s, %u bytes): Exception '%s' caught\n", SanitizeString(strCommand), nMessageSize, e.what());
+                LogPrintf("ProcessMessages(%s, %u bytes) : Exception '%s' caught\n", strCommand, nMessageSize, e.what());
             }
             else
             {
@@ -4317,7 +4380,7 @@ bool ProcessMessages(CNode* pfrom)
         }
 
         if (!fRet)
-            LogPrintf("ProcessMessage(%s, %u bytes) FAILED peer=%d\n", SanitizeString(strCommand), nMessageSize, pfrom->id);
+            LogPrintf("ProcessMessage(%s, %u bytes) FAILED peer=%d\n", strCommand, nMessageSize, pfrom->id);
 
         break;
     }
