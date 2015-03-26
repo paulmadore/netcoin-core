@@ -17,7 +17,7 @@ class CAutoFile;
 
 inline double AllowFreeThreshold()
 {
-    return COIN * 144 / 250;
+    return COIN * 1440 / 250; // NetCoin: 1440 blocks found a day. Priority cutoff is 1 netcoin day / 250 bytes.
 }
 
 inline bool AllowFree(double dPriority)
