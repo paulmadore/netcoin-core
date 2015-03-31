@@ -112,7 +112,7 @@ unsigned int static KimotoGravityWell(const CBlockIndex* pindexLast, uint64_t Ta
     const CBlockIndex  *BlockLastSolved				= pindexLast;
     const CBlockIndex  *BlockReading				= pindexLast;
 
-    uint64_t				PastBlocksMass				= 0;
+    uint64_t			PastBlocksMass				= 0;
     int64_t				PastRateActualSeconds		= 0;
     int64_t				PastRateTargetSeconds		= 0;
     double				PastRateAdjustmentRatio		= double(1);
@@ -178,18 +178,129 @@ unsigned int static GetNextWorkRequired_KGW(const CBlockIndex* pindexLast)
     return KimotoGravityWell(pindexLast, BlocksTargetSpacing, PastBlocksMin, PastBlocksMax);
 }
 
+// Netcoin: Digishield inspired difficulty algorithm
+//  Digibyte code was simplified and reduced by assuming nInterval==1
+//  added fProofOfStake to selectively locate last two blocks of the requested type for the time comparison.
+// includes extra flag to backtrack either Proof of Stake or Proof of Work blocks in the chain
+unsigned int GetNextTrust_DigiShield(const CBlockIndex* pindexLast, bool fProofOfStake)
+{
+    //unsigned int nProofOfWorkLimit = Params().ProofOfWorkLimit().GetCompact();
+
+    // find the previous 2 blocks of the requested type (either POS or POW)
+    const CBlockIndex* pindexPrev = GetLastBlockIndex(pindexLast, fProofOfStake);
+
+    // netcoin POW and POS blocks each separately retarget to 2 minutes, giving 1 minute overall average block target time.
+    int64_t retargetTimespan = Params().TargetSpacing() * 2;
+
+    // Genesis block,  or first POS block not yet mined
+    if (pindexPrev == NULL) return bnProofOfWorkLimit.getuint();
+
+    // is there another block of the correct type prior to pindexPrev?
+    const CBlockIndex* pindexPrevPrev = GetLastBlockIndex(pindexPrev->pprev, fProofOfStake);
+    if (pindexPrevPrev == NULL)
+        pindexPrevPrev = pindexPrev ;
+
+    // Limit adjustment step
+    int64_t nActualTimespan = pindexPrev->GetBlockTime() - pindexPrevPrev->GetBlockTime();
+
+    // thanks to RealSolid & WDC for this code
+
+    // amplitude filter - thanks to daft27 for this code
+       nActualTimespan = retargetTimespan + (nActualTimespan - retargetTimespan)/8;
+
+    if (nActualTimespan < (retargetTimespan - (retargetTimespan/4)) ) nActualTimespan = (retargetTimespan - (retargetTimespan/4));
+    if (nActualTimespan > (retargetTimespan + (retargetTimespan/2)) ) nActualTimespan = (retargetTimespan + (retargetTimespan/2));
+
+    CBigNum bnNew;
+    bnNew.SetCompact(pindexLast->nBits);
+    bnNew *= nActualTimespan;
+    bnNew /= retargetTimespan;
+
+    if (bnNew > bnProofOfWorkLimit)
+        bnNew = bnProofOfWorkLimit;
+
+    // debug print
+    //if (fDebug && GetBoolArg("-printdigishield")) {
+    //    printf("GetNextWorkRequired RETARGET\n");
+    //    printf("nTargetTimespan = %d nActualTimespan = %d\n", retargetTimespan, nActualTimespan);
+    //    printf("Before: %08x %s\n", pindexLast->nBits, CBigNum().SetCompact(pindexLast->nBits).getuint256().ToString().c_str());
+    //    printf("After: %08x %s\n", bnNew.GetCompact(), bnNew.getuint256().ToString().c_str());
+    //};
+
+    return bnNew.GetCompact();
+}
+
+//NEW DIGISHIELD START
+static const int64_t nTargetTimespanRe = 1*60; // 60 Seconds
+static const int64_t nTargetSpacingRe = 1*60; // 60 seconds
+static const int64_t nIntervalRe = nTargetTimespanRe / nTargetSpacingRe; // 1 block
+
+static const int64_t nMaxAdjustDown = 40; // 40% adjustment down
+static const int64_t nMaxAdjustUp = 20; // 20% adjustment up
+
+static const int64_t nMinActualTimespan = nTargetTimespanRe * (100 - nMaxAdjustUp) / 100;
+static const int64_t nMaxActualTimespan = nTargetTimespanRe * (100 + nMaxAdjustDown) / 100;
+
+
+static unsigned int GetNextWorkRequiredV2(const CBlockIndex* pindexLast, bool fProofOfStake)
+{
+    //unsigned int nProofOfWorkLimit = Params().ProofOfWorkLimit().GetCompact();
+
+    // find the previous 2 blocks of the requested type (either POS or POW)
+    const CBlockIndex* pindexPrev = GetLastBlockIndex(pindexLast, fProofOfStake);
+
+    // netcoin POW and POS blocks each separately retarget to 2 minutes, giving 1 minute overall average block target time.
+    int64_t retargetTimespan = Params().TargetSpacing();
+
+    // Genesis block,  or first POS block not yet mined
+    if (pindexPrev == NULL) return bnProofOfWorkLimit.getuint();
+
+    // is there another block of the correct type prior to pindexPrev?
+    const CBlockIndex* pindexPrevPrev = GetLastBlockIndex(pindexPrev->pprev, fProofOfStake);
+
+    if (pindexPrevPrev == NULL)
+        pindexPrevPrev = pindexPrev ;
+
+       // Limit adjustment step
+       int64_t nActualTimespan = pindexPrev->GetBlockTime() - pindexPrevPrev->GetBlockTime();
+
+       printf(" nActualTimespan = %d before bounds\n", nActualTimespan);
+       if (nActualTimespan < nMinActualTimespan)
+       nActualTimespan = nMinActualTimespan;
+       if (nActualTimespan > nMaxActualTimespan)
+       nActualTimespan = nMaxActualTimespan;
+
+    CBigNum bnNew;
+    bnNew.SetCompact(pindexLast->nBits);
+    bnNew *= nActualTimespan;
+    bnNew /= retargetTimespan;
+
+    if (bnNew > bnProofOfWorkLimit)
+        bnNew = bnProofOfWorkLimit;
+
+    // debug print
+    //if (fDebug && GetBoolArg("-printdigishield")) {
+    //    printf("GetNextWorkRequired RETARGET\n");
+    //    printf("nTargetTimespan = %"PRI64d" nActualTimespan = %"PRI64d"\n", retargetTimespan, nActualTimespan);
+    //    printf("Before: %08x %s\n", pindexLast->nBits, CBigNum().SetCompact(pindexLast->nBits).getuint256().ToString().c_str());
+    //    printf("After: %08x %s\n", bnNew.GetCompact(), bnNew.getuint256().ToString().c_str());
+    //};
+
+    return bnNew.GetCompact();
+}
+
 // POW blocks tried various algorithms starting at different block height
 unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock)
 {
     const CBlockIndex* pindexLastPOW = GetLastBlockIndex(pindexLast, false);
 
     // most recent (highest block height DIGISHIELD FIX)
-    //if (pindexLastPOW->nHeight+1 >= (Params().AllowMinDifficultyBlocks() ? BLOCK_HEIGHT_DIGISHIELD_FIX_START_TESTNET : BLOCK_HEIGHT_DIGISHIELD_FIX_START))
-        //return GetNextWorkRequiredV2(pindexLastPOW, false);
+    if (pindexLastPOW->nHeight+1 >= (Params().AllowMinDifficultyBlocks() ? BLOCK_HEIGHT_DIGISHIELD_FIX_START_TESTNET : BLOCK_HEIGHT_DIGISHIELD_FIX_START))
+        return GetNextWorkRequiredV2(pindexLastPOW, false);
 
     // most recent (highest block height)
-    //if (pindexLastPOW->nHeight+1 >= (Params().AllowMinDifficultyBlocks() ? BLOCK_HEIGHT_POS_AND_DIGISHIELD_START_TESTNET : BLOCK_HEIGHT_POS_AND_DIGISHIELD_START))
-        //return GetNextTrust_DigiShield(pindexLastPOW, false);
+    if (pindexLastPOW->nHeight+1 >= (Params().AllowMinDifficultyBlocks() ? BLOCK_HEIGHT_POS_AND_DIGISHIELD_START_TESTNET : BLOCK_HEIGHT_POS_AND_DIGISHIELD_START))
+        return GetNextTrust_DigiShield(pindexLastPOW, false);
 
     if (pindexLastPOW->nHeight+1 >= (Params().AllowMinDifficultyBlocks() ? BLOCK_HEIGHT_KGW_START_TESTNET : BLOCK_HEIGHT_KGW_START))
         return GetNextWorkRequired_KGW(pindexLast);
